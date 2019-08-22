@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -39,7 +38,7 @@ namespace DotNetOSSIndex
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"Path is required");
+                Console.WriteLine("Path is required");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -55,16 +54,19 @@ namespace DotNetOSSIndex
                 return await AnalyzeSolutionAsync(solutionFile);
             }
 
-            if (extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase) || extension.Equals(".vbproj", StringComparison.OrdinalIgnoreCase))
+            if (extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".vbproj", StringComparison.OrdinalIgnoreCase))
             {
                 var projectFile = Path.GetFullPath(SolutionOrProjectFile);
-
+                var packageConfigFile = string.Concat(Path.GetDirectoryName(projectFile), "\\packages.config");
+                if (File.Exists(packageConfigFile))
+                    return await AnalyzeProjectAsync(packageConfigFile);
                 return await AnalyzeProjectAsync(projectFile);
             }
 
             Console.ForegroundColor = ConsoleColor.Red;
 
-            Console.WriteLine($"Only .sln, .csproj and .vbproj files are supported");
+            Console.WriteLine("Only .sln, .csproj and .vbproj files are supported");
 
             Console.ForegroundColor = defaultForegroundColor;
 
@@ -118,8 +120,8 @@ namespace DotNetOSSIndex
                         if (match.Success)
                         {
                             var projectFile = Path.GetFullPath(Path.Combine(solutionFolder, match.Groups[3].Value));
-
-                            projects.Add(projectFile);
+                            if (!AddPackageConfigFile(projects, solutionFolder, match.Groups[2].Value))
+                                projects.Add(projectFile);
                         }
                     }
                 }
@@ -176,7 +178,7 @@ namespace DotNetOSSIndex
 
             Console.ForegroundColor = ConsoleColor.Blue;
 
-            Console.WriteLine($"» Project: {projectFile}");
+            Console.WriteLine($"» Project: {GetProjectName(projectFile)}");
 
             Console.ForegroundColor = defaultForegroundColor;
 
@@ -201,21 +203,21 @@ namespace DotNetOSSIndex
                                     var packageName = reader["Include"];
                                     var packageVersion = reader["Version"];
 
-                                    if (string.IsNullOrEmpty(packageVersion))
-                                    {
-                                        skippedPackages.Add(($"pkg:nuget/{packageName}", "Package is referenced without version"));
-                                    }
-                                    else
-                                    {
-                                        coordinates.Add($"pkg:nuget/{packageName}@{packageVersion}");
-                                    }
-
+                                    AddCoordinatesAndSkippedPackages(packageName, packageVersion, skippedPackages,
+                                        coordinates);
+                                    break;
+                                case "package":
+                                    packageName = reader["id"];
+                                    packageVersion = reader["version"];
+                                    AddCoordinatesAndSkippedPackages(packageName, packageVersion, skippedPackages,
+                                        coordinates);
                                     break;
                             }
                         }
                     }
                 }
             }
+
             catch (Exception ex)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -263,10 +265,7 @@ namespace DotNetOSSIndex
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", value);
             }
 
-            var request = new
-            {
-                coordinates = coordinates
-            };
+            var request = new {coordinates};
 
             var requestAsString = JsonConvert.SerializeObject(request);
             var requestAsStringContent = new StringContent(requestAsString, Encoding.UTF8, "application/json");
@@ -275,13 +274,15 @@ namespace DotNetOSSIndex
 
             try
             {
-                response = await client.PostAsync("https://ossindex.sonatype.org/api/v3/component-report", requestAsStringContent);
+                response = await client.PostAsync("https://ossindex.sonatype.org/api/v3/component-report",
+                    requestAsStringContent);
             }
             catch (Exception ex)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"  An unhandled exception occurred while checking for vulnerabilities: {ex.Message}");
+                Console.WriteLine(
+                    $"  An unhandled exception occurred while checking for vulnerabilities: {ex.Message}");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -294,7 +295,8 @@ namespace DotNetOSSIndex
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"  An unhandled exception occurred while checking for vulnerabilities: {(int)response.StatusCode} {response.StatusCode} {contentAsString}");
+                Console.WriteLine(
+                    $"  An unhandled exception occurred while checking for vulnerabilities: {(int) response.StatusCode} {response.StatusCode} {contentAsString}");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -311,7 +313,8 @@ namespace DotNetOSSIndex
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"  An unhandled exception occurred while checking for vulnerabilities: {ex.Message}");
+                Console.WriteLine(
+                    $"  An unhandled exception occurred while checking for vulnerabilities: {ex.Message}");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -334,7 +337,7 @@ namespace DotNetOSSIndex
                 Console.WriteLine();
                 Console.WriteLine($"          Package: {component.Coordinates}");
                 Console.WriteLine($"        Reference: {component.Reference}");
-                Console.Write(     "  Vulnerabilities:");
+                Console.Write("  Vulnerabilities:");
 
                 foreach (var vulnerability in component.Vulnerabilities.OrderByDescending(v => v.CVSSScore))
                 {
@@ -377,6 +380,37 @@ namespace DotNetOSSIndex
             }
 
             return 0;
+        }
+
+        private static string GetProjectName(string projectFile)
+        {
+            var directoryName = Path.GetDirectoryName(projectFile);
+            return Directory.GetFiles(directoryName, "*.csproj").Concat(
+                       Directory.GetFiles(directoryName, "*.vbproj")).FirstOrDefault() ??
+                   "Project file can not be identified.";
+        }
+
+        private bool AddPackageConfigFile(List<string> projects, string path1, string path2)
+        {
+            var packageConfigFile =
+                string.Concat(Path.GetFullPath(Path.Combine(path1, path2)), "\\packages.config");
+            var isPackageConfigFileExists = File.Exists(packageConfigFile);
+            if (isPackageConfigFileExists)
+                projects.Add(packageConfigFile);
+            return isPackageConfigFileExists;
+        }
+
+        private void AddCoordinatesAndSkippedPackages(string packageName, string packageVersion,
+            List<(string pkgName, string reason)> skippedPackages, List<string> coordinates)
+        {
+            if (string.IsNullOrEmpty(packageVersion))
+            {
+                skippedPackages.Add(($"pkg:nuget/{packageName}", "Package is referenced without version"));
+            }
+            else
+            {
+                coordinates.Add($"pkg:nuget/{packageName}@{packageVersion}");
+            }
         }
     }
 

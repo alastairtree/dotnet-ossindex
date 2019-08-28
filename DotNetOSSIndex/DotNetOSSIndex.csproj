@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -20,6 +20,21 @@
     <RepositoryUrl>https://github.com/fabiano/dotnet-ossindex.git</RepositoryUrl>
     <ToolCommandName>dotnet-ossindex</ToolCommandName>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="Examples\Example.csproj" />
+    <None Include="Examples\Example.DotNetFramework.sln" />
+    <None Include="Examples\Example.DotNetFrameworkWithPackageReference.csproj" />
+    <None Include="Examples\Example.DotNetFrameworkWithPackageConfig.csproj" />
+    <None Include="Examples\Example.NoPackages.csproj" />
+    <None Include="Examples\Example.NoPackages.sln" />
+    <None Include="Examples\Example.NoProjects.sln" />
+    <None Include="Examples\Example.NoVersion.csproj" />
+    <None Include="Examples\Example.NoVersion.sln" />
+    <None Include="Examples\Example.sln" />
+    <None Include="Examples\Example.SolutionFolder.sln" />
+    <None Include="Examples\Example.vbproj" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="McMaster.Extensions.CommandLineUtils" Version="2.3.0" />

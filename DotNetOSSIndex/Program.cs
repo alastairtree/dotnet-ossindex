@@ -17,7 +17,8 @@ namespace DotNetOSSIndex
     class Program
     {
         [Argument(0, Name = "Path", Description = "The path to a .sln, .csproj or .vbproj file")]
-        public string SolutionOrProjectFile { get; set; }
+        public string SolutionOrProjectFile { get; set; } 
+
 
         [Option(Description = "OSS Index Username", ShortName = "u")]
         string Username { get; }
@@ -58,6 +59,7 @@ namespace DotNetOSSIndex
                 extension.Equals(".vbproj", StringComparison.OrdinalIgnoreCase))
             {
                 var projectFile = Path.GetFullPath(SolutionOrProjectFile);
+
                 return await AnalyzeProjectAsync(projectFile);
             }
 
@@ -117,6 +119,7 @@ namespace DotNetOSSIndex
                         if (match.Success)
                         {
                             var projectFile = Path.GetFullPath(Path.Combine(solutionFolder, match.Groups[3].Value));
+
                             projects.Add(projectFile);
                         }
                     }
@@ -156,9 +159,10 @@ namespace DotNetOSSIndex
 
             return 0;
         }
-        private bool? IsDotNetCoreProject(string projectFile)
+       
+
+        private bool IsPackageConfigScanRequired(string projectFile)
         {
-            var expectedTFMValue = string.Empty;
             using (var xmlReader = XmlReader.Create(projectFile))
             {
                 while (xmlReader.Read())
@@ -167,19 +171,12 @@ namespace DotNetOSSIndex
                     {
                         switch (xmlReader.Name)
                         {
-                            case "TargetFrameworkVersion":
-                                var regex = new Regex(@"\bv\d\.\d\b");
-                                if (regex.Match(xmlReader.ReadString()).Success)
-                                    return false;
-                                break;
-                            case "TargetFramework":
-                                expectedTFMValue = xmlReader.ReadString();
-                                return (expectedTFMValue.Contains("netcoreapp") ||expectedTFMValue.Contains("netstandard"));
-                                
+                            case "PackageReference":
+                                return false;
                         }
                     }
                 }
-                return null;
+                return true;
             }
         }
 
@@ -226,17 +223,11 @@ namespace DotNetOSSIndex
             Console.WriteLine("  Getting packages".PadRight(64));
             Console.SetCursorPosition(Console.CursorLeft, Console.CursorTop - 1);
 
-            var isDotNetCoreProject = IsDotNetCoreProject(projectFile);
-            if (isDotNetCoreProject == null)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Skipping project {projectFile} as unable to decide project type");
-                Console.ForegroundColor = defaultForegroundColor;
-                return 0;
-            }
+            var isPackageConfigScanRequired = IsPackageConfigScanRequired(projectFile);
+            
             var packageConfigFile=string.Empty;
 
-            if (!isDotNetCoreProject.Value)
+            if (isPackageConfigScanRequired)
             {
                 packageConfigFile = Path.Combine(Path.GetDirectoryName(projectFile), "packages.Config");
                 if(!File.Exists(packageConfigFile))
@@ -249,7 +240,7 @@ namespace DotNetOSSIndex
                 }
                 
             }
-            var sourceFile = isDotNetCoreProject.Value ? projectFile : packageConfigFile;
+            var sourceFile = !isPackageConfigScanRequired ? projectFile : packageConfigFile;
 
             var coordinates = new List<string>();
             var skippedPackages = new List<(string packageName, string reason)>();
@@ -269,7 +260,6 @@ namespace DotNetOSSIndex
                                 case "package":
                                     IndexPackagesDotNetFramework(reader, skippedPackages, coordinates);
                                     break;
-                                
                             }
                         }
                     }
@@ -440,7 +430,7 @@ namespace DotNetOSSIndex
             return 0;
         }
 
-       private void AddCoordinatesAndSkippedPackages(string packageName, string packageVersion,
+        private void AddCoordinatesAndSkippedPackages(string packageName, string packageVersion,
             List<(string pkgName, string reason)> skippedPackages, List<string> coordinates)
         {
             if (string.IsNullOrEmpty(packageVersion))

@@ -58,9 +58,6 @@ namespace DotNetOSSIndex
                 extension.Equals(".vbproj", StringComparison.OrdinalIgnoreCase))
             {
                 var projectFile = Path.GetFullPath(SolutionOrProjectFile);
-                var packageConfigFile = string.Concat(Path.GetDirectoryName(projectFile), "\\packages.config");
-                if (File.Exists(packageConfigFile))
-                    return await AnalyzeProjectAsync(packageConfigFile);
                 return await AnalyzeProjectAsync(projectFile);
             }
 
@@ -120,8 +117,7 @@ namespace DotNetOSSIndex
                         if (match.Success)
                         {
                             var projectFile = Path.GetFullPath(Path.Combine(solutionFolder, match.Groups[3].Value));
-                            if (!AddPackageConfigFile(projects, solutionFolder, match.Groups[2].Value))
-                                projects.Add(projectFile);
+                            projects.Add(projectFile);
                         }
                     }
                 }
@@ -160,7 +156,51 @@ namespace DotNetOSSIndex
 
             return 0;
         }
+        private bool? IsDotNetCoreProject(string projectFile)
+        {
+            var expectedTFMValue = string.Empty;
+            using (var xmlReader = XmlReader.Create(projectFile))
+            {
+                while (xmlReader.Read())
+                {
+                    if (xmlReader.IsStartElement())
+                    {
+                        switch (xmlReader.Name)
+                        {
+                            case "TargetFrameworkVersion":
+                                var regex = new Regex(@"\bv\d\.\d\b");
+                                if (regex.Match(xmlReader.ReadString()).Success)
+                                    return false;
+                                break;
+                            case "TargetFramework":
+                                expectedTFMValue = xmlReader.ReadString();
+                                return (expectedTFMValue.Contains("netcoreapp") ||expectedTFMValue.Contains("netstandard"));
+                                
+                        }
+                    }
+                }
+                return null;
+            }
+        }
 
+        private void IndexPackagesDotNetCoreApp(XmlReader reader, List<(string packageName, string reason)> skippedPackages,
+            List<string> coordinates)
+        {
+            var packageName = reader["Include"];
+            var packageVersion = reader["Version"];
+
+            AddCoordinatesAndSkippedPackages(packageName, packageVersion, skippedPackages,
+                coordinates);
+        }
+        private void IndexPackagesDotNetFramework(XmlReader reader, List<(string packageName, string reason)> skippedPackages,
+            List<string> coordinates)
+        {
+            var packageName = reader["id"];
+            var packageVersion = reader["version"];
+
+            AddCoordinatesAndSkippedPackages(packageName, packageVersion, skippedPackages,
+                coordinates);
+        }
         async Task<int> AnalyzeProjectAsync(string projectFile)
         {
             var defaultForegroundColor = Console.ForegroundColor;
@@ -169,7 +209,7 @@ namespace DotNetOSSIndex
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"Project file \"{projectFile}\" does not exist");
+                Console.WriteLine($"Project \"{projectFile}\" does not exist");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -178,7 +218,7 @@ namespace DotNetOSSIndex
 
             Console.ForegroundColor = ConsoleColor.Blue;
 
-            Console.WriteLine($"» Project: {GetProjectName(projectFile)}");
+            Console.WriteLine($"» Project: {projectFile}");
 
             Console.ForegroundColor = defaultForegroundColor;
 
@@ -186,12 +226,36 @@ namespace DotNetOSSIndex
             Console.WriteLine("  Getting packages".PadRight(64));
             Console.SetCursorPosition(Console.CursorLeft, Console.CursorTop - 1);
 
+            var isDotNetCoreProject = IsDotNetCoreProject(projectFile);
+            if (isDotNetCoreProject == null)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Skipping project {projectFile} as unable to decide project type");
+                Console.ForegroundColor = defaultForegroundColor;
+                return 0;
+            }
+            var packageConfigFile=string.Empty;
+
+            if (!isDotNetCoreProject.Value)
+            {
+                packageConfigFile = Path.Combine(Path.GetDirectoryName(projectFile), "packages.Config");
+                if(!File.Exists(packageConfigFile))
+                {
+                    Console.ForegroundColor = defaultForegroundColor;
+
+                    Console.WriteLine("  No packages found".PadRight(64));
+
+                    return 0;
+                }
+                
+            }
+            var sourceFile = isDotNetCoreProject.Value ? projectFile : packageConfigFile;
+
             var coordinates = new List<string>();
             var skippedPackages = new List<(string packageName, string reason)>();
-
             try
             {
-                using (XmlReader reader = XmlReader.Create(projectFile))
+                using (XmlReader reader = XmlReader.Create(sourceFile))
                 {
                     while (reader.Read())
                     {
@@ -200,18 +264,12 @@ namespace DotNetOSSIndex
                             switch (reader.Name)
                             {
                                 case "PackageReference":
-                                    var packageName = reader["Include"];
-                                    var packageVersion = reader["Version"];
-
-                                    AddCoordinatesAndSkippedPackages(packageName, packageVersion, skippedPackages,
-                                        coordinates);
+                                    IndexPackagesDotNetCoreApp(reader,skippedPackages,coordinates);
                                     break;
                                 case "package":
-                                    packageName = reader["id"];
-                                    packageVersion = reader["version"];
-                                    AddCoordinatesAndSkippedPackages(packageName, packageVersion, skippedPackages,
-                                        coordinates);
+                                    IndexPackagesDotNetFramework(reader, skippedPackages, coordinates);
                                     break;
+                                
                             }
                         }
                     }
@@ -382,25 +440,7 @@ namespace DotNetOSSIndex
             return 0;
         }
 
-        private static string GetProjectName(string projectFile)
-        {
-            var directoryName = Path.GetDirectoryName(projectFile);
-            return Directory.GetFiles(directoryName, "*.csproj").Concat(
-                       Directory.GetFiles(directoryName, "*.vbproj")).FirstOrDefault() ??
-                   "Project file can not be identified.";
-        }
-
-        private bool AddPackageConfigFile(List<string> projects, string path1, string path2)
-        {
-            var packageConfigFile =
-                string.Concat(Path.GetFullPath(Path.Combine(path1, path2)), "\\packages.config");
-            var isPackageConfigFileExists = File.Exists(packageConfigFile);
-            if (isPackageConfigFileExists)
-                projects.Add(packageConfigFile);
-            return isPackageConfigFileExists;
-        }
-
-        private void AddCoordinatesAndSkippedPackages(string packageName, string packageVersion,
+       private void AddCoordinatesAndSkippedPackages(string packageName, string packageVersion,
             List<(string pkgName, string reason)> skippedPackages, List<string> coordinates)
         {
             if (string.IsNullOrEmpty(packageVersion))

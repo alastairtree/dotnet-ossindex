@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -18,7 +17,8 @@ namespace DotNetOSSIndex
     class Program
     {
         [Argument(0, Name = "Path", Description = "The path to a .sln, .csproj or .vbproj file")]
-        public string SolutionOrProjectFile { get; set; }
+        public string SolutionOrProjectFile { get; set; } 
+
 
         [Option(Description = "OSS Index Username", ShortName = "u")]
         string Username { get; }
@@ -39,7 +39,7 @@ namespace DotNetOSSIndex
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"Path is required");
+                Console.WriteLine("Path is required");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -55,7 +55,8 @@ namespace DotNetOSSIndex
                 return await AnalyzeSolutionAsync(solutionFile);
             }
 
-            if (extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase) || extension.Equals(".vbproj", StringComparison.OrdinalIgnoreCase))
+            if (extension.Equals(".csproj", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".vbproj", StringComparison.OrdinalIgnoreCase))
             {
                 var projectFile = Path.GetFullPath(SolutionOrProjectFile);
 
@@ -64,7 +65,7 @@ namespace DotNetOSSIndex
 
             Console.ForegroundColor = ConsoleColor.Red;
 
-            Console.WriteLine($"Only .sln, .csproj and .vbproj files are supported");
+            Console.WriteLine("Only .sln, .csproj and .vbproj files are supported");
 
             Console.ForegroundColor = defaultForegroundColor;
 
@@ -158,7 +159,45 @@ namespace DotNetOSSIndex
 
             return 0;
         }
+       
 
+        private bool IsPackageConfigScanRequired(string projectFile)
+        {
+            using (var xmlReader = XmlReader.Create(projectFile))
+            {
+                while (xmlReader.Read())
+                {
+                    if (xmlReader.IsStartElement())
+                    {
+                        switch (xmlReader.Name)
+                        {
+                            case "PackageReference":
+                                return false;
+                        }
+                    }
+                }
+                return true;
+            }
+        }
+
+        private void IndexPackagesDotNetCoreApp(XmlReader reader, List<(string packageName, string reason)> skippedPackages,
+            List<string> coordinates)
+        {
+            var packageName = reader["Include"];
+            var packageVersion = reader["Version"];
+
+            AddCoordinatesAndSkippedPackages(packageName, packageVersion, skippedPackages,
+                coordinates);
+        }
+        private void IndexPackagesDotNetFramework(XmlReader reader, List<(string packageName, string reason)> skippedPackages,
+            List<string> coordinates)
+        {
+            var packageName = reader["id"];
+            var packageVersion = reader["version"];
+
+            AddCoordinatesAndSkippedPackages(packageName, packageVersion, skippedPackages,
+                coordinates);
+        }
         async Task<int> AnalyzeProjectAsync(string projectFile)
         {
             var defaultForegroundColor = Console.ForegroundColor;
@@ -167,7 +206,7 @@ namespace DotNetOSSIndex
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"Project file \"{projectFile}\" does not exist");
+                Console.WriteLine($"Project \"{projectFile}\" does not exist");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -184,12 +223,30 @@ namespace DotNetOSSIndex
             Console.WriteLine("  Getting packages".PadRight(64));
             Console.SetCursorPosition(Console.CursorLeft, Console.CursorTop - 1);
 
+            var isPackageConfigScanRequired = IsPackageConfigScanRequired(projectFile);
+            
+            var packageConfigFile=string.Empty;
+
+            if (isPackageConfigScanRequired)
+            {
+                packageConfigFile = Path.Combine(Path.GetDirectoryName(projectFile), "packages.Config");
+                if(!File.Exists(packageConfigFile))
+                {
+                    Console.ForegroundColor = defaultForegroundColor;
+
+                    Console.WriteLine("  No packages found".PadRight(64));
+
+                    return 0;
+                }
+                
+            }
+            var sourceFile = !isPackageConfigScanRequired ? projectFile : packageConfigFile;
+
             var coordinates = new List<string>();
             var skippedPackages = new List<(string packageName, string reason)>();
-
             try
             {
-                using (XmlReader reader = XmlReader.Create(projectFile))
+                using (XmlReader reader = XmlReader.Create(sourceFile))
                 {
                     while (reader.Read())
                     {
@@ -198,24 +255,17 @@ namespace DotNetOSSIndex
                             switch (reader.Name)
                             {
                                 case "PackageReference":
-                                    var packageName = reader["Include"];
-                                    var packageVersion = reader["Version"];
-
-                                    if (string.IsNullOrEmpty(packageVersion))
-                                    {
-                                        skippedPackages.Add(($"pkg:nuget/{packageName}", "Package is referenced without version"));
-                                    }
-                                    else
-                                    {
-                                        coordinates.Add($"pkg:nuget/{packageName}@{packageVersion}");
-                                    }
-
+                                    IndexPackagesDotNetCoreApp(reader,skippedPackages,coordinates);
+                                    break;
+                                case "package":
+                                    IndexPackagesDotNetFramework(reader, skippedPackages, coordinates);
                                     break;
                             }
                         }
                     }
                 }
             }
+
             catch (Exception ex)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -263,10 +313,7 @@ namespace DotNetOSSIndex
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", value);
             }
 
-            var request = new
-            {
-                coordinates = coordinates
-            };
+            var request = new {coordinates};
 
             var requestAsString = JsonConvert.SerializeObject(request);
             var requestAsStringContent = new StringContent(requestAsString, Encoding.UTF8, "application/json");
@@ -275,13 +322,15 @@ namespace DotNetOSSIndex
 
             try
             {
-                response = await client.PostAsync("https://ossindex.sonatype.org/api/v3/component-report", requestAsStringContent);
+                response = await client.PostAsync("https://ossindex.sonatype.org/api/v3/component-report",
+                    requestAsStringContent);
             }
             catch (Exception ex)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"  An unhandled exception occurred while checking for vulnerabilities: {ex.Message}");
+                Console.WriteLine(
+                    $"  An unhandled exception occurred while checking for vulnerabilities: {ex.Message}");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -294,7 +343,8 @@ namespace DotNetOSSIndex
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"  An unhandled exception occurred while checking for vulnerabilities: {(int)response.StatusCode} {response.StatusCode} {contentAsString}");
+                Console.WriteLine(
+                    $"  An unhandled exception occurred while checking for vulnerabilities: {(int) response.StatusCode} {response.StatusCode} {contentAsString}");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -311,7 +361,8 @@ namespace DotNetOSSIndex
             {
                 Console.ForegroundColor = ConsoleColor.Red;
 
-                Console.WriteLine($"  An unhandled exception occurred while checking for vulnerabilities: {ex.Message}");
+                Console.WriteLine(
+                    $"  An unhandled exception occurred while checking for vulnerabilities: {ex.Message}");
 
                 Console.ForegroundColor = defaultForegroundColor;
 
@@ -334,7 +385,7 @@ namespace DotNetOSSIndex
                 Console.WriteLine();
                 Console.WriteLine($"          Package: {component.Coordinates}");
                 Console.WriteLine($"        Reference: {component.Reference}");
-                Console.Write(     "  Vulnerabilities:");
+                Console.Write("  Vulnerabilities:");
 
                 foreach (var vulnerability in component.Vulnerabilities.OrderByDescending(v => v.CVSSScore))
                 {
@@ -377,6 +428,19 @@ namespace DotNetOSSIndex
             }
 
             return 0;
+        }
+
+        private void AddCoordinatesAndSkippedPackages(string packageName, string packageVersion,
+            List<(string pkgName, string reason)> skippedPackages, List<string> coordinates)
+        {
+            if (string.IsNullOrEmpty(packageVersion))
+            {
+                skippedPackages.Add(($"pkg:nuget/{packageName}", "Package is referenced without version"));
+            }
+            else
+            {
+                coordinates.Add($"pkg:nuget/{packageName}@{packageVersion}");
+            }
         }
     }
 
